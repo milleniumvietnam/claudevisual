@@ -1,0 +1,217 @@
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+}
+
+export function emptyUsage(): TokenUsage {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+  };
+}
+
+export function addUsage(a: TokenUsage, b: Partial<TokenUsage>): TokenUsage {
+  return {
+    inputTokens: a.inputTokens + (b.inputTokens ?? 0),
+    outputTokens: a.outputTokens + (b.outputTokens ?? 0),
+    cacheCreationInputTokens: a.cacheCreationInputTokens + (b.cacheCreationInputTokens ?? 0),
+    cacheReadInputTokens: a.cacheReadInputTokens + (b.cacheReadInputTokens ?? 0),
+  };
+}
+
+export type PermissionMode = "normal" | "acceptEdits" | "bypassPermissions" | "plan" | string;
+
+export interface SessionState {
+  sessionId: string;
+  cwd: string;
+  /** Claude Code's own auto-generated session title (`ai-title` transcript
+   *  line), re-written periodically as the conversation evolves. Undefined
+   *  until the first such line is seen — display falls back to the cwd's
+   *  basename until then. */
+  title: string | undefined;
+  model: string | undefined;
+  /** Sum of usage across every assistant turn this session — a total-spend proxy. */
+  cumulativeUsage: TokenUsage;
+  /**
+   * `input + cache_read + cache_creation` tokens from the MOST RECENT assistant
+   * turn only (excludes `output_tokens`, which is generated text, not context
+   * occupancy). Approximates current context-window fill until Phase 4 wires
+   * the precise `context_window.used_percentage` from statusLine. Must NOT be
+   * a cumulative sum across turns — context is bounded by the model's window,
+   * not by total session spend.
+   */
+  lastTurnContextTokens: number;
+  permissionMode: PermissionMode | undefined;
+  isLive: boolean;
+  lastUpdatedAt: number;
+  /** Sub-agents (`Agent` tool invocations) seen this session, keyed by the tool_use id
+   *  that also names their transcript file (`<sessionId>/subagents/agent-<id>.jsonl`). */
+  subagents: Map<string, SubAgentState>;
+  /** Distinct skill/command names invoked this session, in first-seen order. */
+  skillsInvoked: string[];
+  /** Bounded, most-recent-last ring buffer of tool_use calls (see `MAX_RECENT_TOOL_CALLS`). */
+  recentToolCalls: ToolCallRecord[];
+  /**
+   * Low-latency overlay from the opt-in hooks event log (Phase 3,
+   * `core/event-log-reader.ts`) — `true` while Claude is actively working
+   * (prompt submitted / tool in flight), flipped ahead of the JSONL
+   * transcript line landing. `false` once a `Stop`/idle hook event fires.
+   * Stays `false` for the lifetime of the session if hooks were never
+   * installed. Independent of `isLive` (process-alive) — a live process can
+   * be idle awaiting the next user prompt.
+   */
+  running: boolean;
+  /** Most recent `hook_event_name` seen for this session via the event log, if hooks are installed. */
+  lastHookEvent: string | undefined;
+  /** Timestamp (ms) `lastHookEvent` was recorded. */
+  lastHookEventAt: number | undefined;
+  /** `source` of the most recent `SessionStart` hook event (`"startup" | "resume" |
+   *  "clear" | "compact"`), if hooks are installed. Lets the sidebar tell a
+   *  just-`/clear`-ed (or just-started) empty session apart from one that did
+   *  work and went quiet. */
+  lastSessionStartSource: string | undefined;
+  /**
+   * Precise context-window usage percentage (0-100) sourced from the
+   * statusLine payload's `context_window.used_percentage` (Phase 4,
+   * `core/event-log-reader.ts` tailing `statusline-cache.json`), present only
+   * when the user has installed the statusline wrap. Takes priority over
+   * `lastTurnContextTokens` for display — that field stays the JSONL-derived
+   * approximation used as a fallback when the wrap isn't installed.
+   */
+  preciseContextPercent: number | undefined;
+  /**
+   * The model's actual context window size (tokens) from the statusLine payload's
+   * `context_window.context_window_size`, present only when the wrap is installed.
+   * Varies per session (e.g. extended-context betas), so once known it replaces the
+   * hardcoded per-model guess `resolveContextPercent`'s fallback path uses — even on
+   * turns where `preciseContextPercent` itself is momentarily unavailable.
+   */
+  preciseContextWindowSize: number | undefined;
+  /** Precise current context occupancy (tokens) from the statusLine payload's
+   *  `context_window.total_input_tokens` — the exact numerator the native
+   *  "Context usage" popup shows (e.g. `93.9k` of `967.0k`), present only when
+   *  the wrap is installed. Preferred over reconstructing tokens from the
+   *  rounded `preciseContextPercent` for display. */
+  preciseContextUsedTokens: number | undefined;
+  /** Precise total session cost (USD) from the statusLine payload's `cost.total_cost_usd`. */
+  preciseCostUsd: number | undefined;
+  /** Timestamp (ms) `preciseContextPercent`/`preciseCostUsd` were last updated. */
+  preciseStatusLineUpdatedAt: number | undefined;
+  /**
+   * Token spend rate (~tokens/min) over a recent sampling window, computed by
+   * the store (not the pure reducer — like `isLive`) from a bounded ring of
+   * `cumulativeUsage` totals. Undefined until at least two samples exist or when
+   * the newest sample is stale (session idle). Display-only.
+   */
+  burnRatePerMin: number | undefined;
+  /**
+   * Count of `/compact` summary lines seen this session — a context-thrash
+   * indicator (frequent compaction means the window keeps overflowing). Derived
+   * in the reducer from the same `isCompactSummary` signal that resets context.
+   */
+  compactionCount: number;
+  /**
+   * The most recent assistant turn's `stop_reason` (`"end_turn"`, `"max_tokens"`,
+   * `"tool_use"`, ...). A `"max_tokens"` stop means output was truncated — an
+   * efficiency signal. Undefined until the first terminal turn is seen.
+   */
+  lastStopReason: string | undefined;
+}
+
+export function emptySessionState(sessionId: string, cwd: string): SessionState {
+  return {
+    sessionId,
+    cwd,
+    title: undefined,
+    model: undefined,
+    cumulativeUsage: emptyUsage(),
+    lastTurnContextTokens: 0,
+    permissionMode: undefined,
+    isLive: false,
+    lastUpdatedAt: 0,
+    subagents: new Map(),
+    skillsInvoked: [],
+    recentToolCalls: [],
+    running: false,
+    lastHookEvent: undefined,
+    lastHookEventAt: undefined,
+    lastSessionStartSource: undefined,
+    preciseContextPercent: undefined,
+    preciseContextWindowSize: undefined,
+    preciseContextUsedTokens: undefined,
+    preciseCostUsd: undefined,
+    preciseStatusLineUpdatedAt: undefined,
+    burnRatePerMin: undefined,
+    compactionCount: 0,
+    lastStopReason: undefined,
+  };
+}
+
+export type SubAgentStatus = "running" | "completed";
+
+/** Sentinel agentId for the main session's own activity, distinguishing it from
+ *  spawned sub-agents in the shared agent-identity color map + economics rollup. */
+export const MAIN_AGENT_ID = "main";
+
+/** One `Agent` tool invocation (a spawned sub-agent) tracked for the lifetime of the parent session. */
+export interface SubAgentState {
+  agentId: string;
+  subagentType: string;
+  status: SubAgentStatus;
+  tokens: TokenUsage;
+  startedAt: number;
+  lastUpdatedAt: number;
+  /** The model this sub-agent runs on, captured from its transcript's
+   *  `message.model` (a sub-agent's model is its own, independent of the
+   *  parent's). Undefined until its first assistant line is reduced. */
+  model?: string;
+  /** Short human reason the agent was spawned — the `Agent` tool call's
+   *  `description` (falls back to a truncated `prompt`). Undefined if neither
+   *  was present on the spawning call. */
+  spawnReason?: string;
+  /** Bounded, most-recent-last ring buffer of this sub-agent's own tool_use
+   *  calls, parsed from its transcript — drives the agent drill-down panel and
+   *  its contribution to the activity heartbeat. */
+  recentToolCalls: ToolCallRecord[];
+  /**
+   * The agentId of the agent that spawned this one, sourced from this agent's
+   * own `agent-<agentId>.meta.json` sidecar (see `core/subagent-meta-reader.ts`).
+   * NOT derivable from the parent's `Agent` tool_use `id` — verified against
+   * real transcripts that id is a distinct `toolu_...` string, unrelated to
+   * this file's `agentId`. Undefined for a top-level agent (spawned by the
+   * main session) or until its meta sidecar has been read.
+   */
+  parentAgentId?: string;
+  /** The `id` of the `Agent` tool_use block that spawned this agent (from the
+   *  same meta sidecar as `parentAgentId`) — the only way to match this agent
+   *  to its spawning call's later `tool_result` and flip `status` to `completed`,
+   *  since that id is unrelated to `agentId`. */
+  toolUseId?: string;
+}
+
+export function emptySubAgentState(
+  agentId: string,
+  subagentType: string,
+  startedAt: number = Date.now()
+): SubAgentState {
+  return {
+    agentId,
+    subagentType,
+    status: "running",
+    tokens: emptyUsage(),
+    startedAt,
+    lastUpdatedAt: startedAt,
+    recentToolCalls: [],
+  };
+}
+
+/** One entry in the bounded `recentToolCalls` ring buffer surfaced in the tree view. */
+export interface ToolCallRecord {
+  name: string;
+  detail?: string;
+  timestamp: number;
+}

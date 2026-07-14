@@ -1,0 +1,227 @@
+{
+  "name": "claudevisual",
+  "displayName": "ClaudeVisual",
+  "description": "Real-time visibility and config tuning for Claude Code sessions inside VS Code",
+  "version": "0.1.0",
+  "publisher": "dinhphu",
+  "icon": "resources/icon.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vietphu/claudevisual.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vietphu/claudevisual/issues"
+  },
+  "homepage": "https://github.com/vietphu/claudevisual#readme",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "claude",
+    "claude code",
+    "anthropic",
+    "ai",
+    "agent",
+    "observability",
+    "dashboard",
+    "tokens",
+    "cost"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudevisual.installHooks",
+        "title": "ClaudeVisual: Install Hooks"
+      },
+      {
+        "command": "claudevisual.uninstallHooks",
+        "title": "ClaudeVisual: Uninstall Hooks"
+      },
+      {
+        "command": "claudevisual.wrapStatusLine",
+        "title": "ClaudeVisual: Wrap StatusLine"
+      },
+      {
+        "command": "claudevisual.previewStatusLineWrap",
+        "title": "ClaudeVisual: Preview StatusLine Wrap"
+      },
+      {
+        "command": "claudevisual.restoreOriginalStatusLine",
+        "title": "ClaudeVisual: Restore Original StatusLine"
+      },
+      {
+        "command": "claudevisual.openDashboard",
+        "title": "ClaudeVisual: Open Dashboard"
+      },
+      {
+        "command": "claudevisual.openSettings",
+        "title": "ClaudeVisual: Open Settings",
+        "icon": "$(gear)"
+      }
+    ],
+    "configuration": {
+      "title": "ClaudeVisual",
+      "properties": {
+        "claudevisual.debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log verbose ClaudeVisual diagnostics to the ClaudeVisual output channel."
+        },
+        "claudevisual.advisor.plan": {
+          "type": "string",
+          "enum": ["max", "pro", "api"],
+          "default": "max",
+          "enumDescriptions": [
+            "Max subscription — the USD figure is an API-equivalent consumption proxy, not billed money.",
+            "Pro subscription — same flat-fee framing as Max.",
+            "API/pay-as-you-go — the USD figure is real billed spend."
+          ],
+          "markdownDescription": "Your Claude Code billing plan. On a flat-fee subscription (Max/Pro) the Efficiency Advisor frames cost as a usage-budget consumption proxy rather than out-of-pocket money."
+        },
+        "claudevisual.advisor.notifyCritical": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a VS Code notification when a session hits a critical efficiency condition (e.g. context almost full). Fires once per condition, not per update."
+        },
+        "claudevisual.advisor.thresholds.contextWarnPercent": {
+          "type": "number",
+          "default": 75,
+          "minimum": 1,
+          "maximum": 98,
+          "description": "Context-window occupancy (%) at which the Efficiency Advisor starts warning that context is filling up."
+        },
+        "claudevisual.advisor.thresholds.contextCritPercent": {
+          "type": "number",
+          "default": 90,
+          "minimum": 2,
+          "maximum": 99,
+          "description": "Context-window occupancy (%) at which the Efficiency Advisor flags context as critical (wrap up or /compact now). Must be greater than contextWarnPercent."
+        },
+        "claudevisual.advisor.thresholds.cacheChurnRatio": {
+          "type": "number",
+          "default": 1.5,
+          "minimum": 1,
+          "description": "Cache creation:read ratio above which the advisor flags high cache churn (context being re-written instead of reused)."
+        },
+        "claudevisual.advisor.thresholds.cacheChurnMinCreationTokens": {
+          "type": "number",
+          "default": 50000,
+          "minimum": 0,
+          "description": "Minimum cache-creation tokens before the cache-churn check applies, so small early sessions (naturally high ratio before reuse accrues) don't false-trip."
+        },
+        "claudevisual.advisor.thresholds.cacheLowSavedPct": {
+          "type": "number",
+          "default": 25,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Cache-reuse rate (%) below which the advisor nudges about low cache reuse on a session with real spend."
+        },
+        "claudevisual.advisor.thresholds.cacheLowMinTotalTokens": {
+          "type": "number",
+          "default": 200000,
+          "minimum": 0,
+          "description": "Minimum total tokens before the low-cache-reuse nudge applies."
+        },
+        "claudevisual.advisor.thresholds.subagentExpensiveTokens": {
+          "type": "number",
+          "default": 500000,
+          "minimum": 0,
+          "description": "Minimum token spend by a single sub-agent before the advisor even considers flagging it for ROI review — a floor, paired with subagentExpensiveShareOfSession below."
+        },
+        "claudevisual.advisor.thresholds.subagentExpensiveShareOfSession": {
+          "type": "number",
+          "default": 0.15,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Share (0-1) of the session's total tokens a single sub-agent must account for, on top of subagentExpensiveTokens, before the advisor flags it as dominating spend. Keeps a legitimately large delegated task in a long session from being flagged just because it's large in absolute terms."
+        },
+        "claudevisual.advisor.thresholds.modelRightsizeMinTotalTokens": {
+          "type": "number",
+          "default": 300000,
+          "minimum": 0,
+          "description": "Minimum total tokens on the main agent's own usage (not counting sub-agents) before the advisor considers suggesting a lighter model for an Opus session."
+        },
+        "claudevisual.advisor.thresholds.modelRightsizeMaxOutputShare": {
+          "type": "number",
+          "default": 0.08,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Maximum output-token share (0-1) of the main agent's fresh (non-cache-read) tokens for the advisor to suggest a lighter model — low output share means little of the reasoning premium was used on the agent's own direct work."
+        },
+        "claudevisual.advisor.thresholds.costProjectionMinBurnPerMin": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 0,
+          "description": "Minimum live token burn rate (tokens/min) before the advisor projects time-to-context-limit."
+        },
+        "claudevisual.advisor.thresholds.frequentCompactionCount": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "description": "Number of /compact events in a session at which the advisor flags repeated compaction and suggests splitting the work into a fresh session."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claudevisual",
+          "title": "ClaudeVisual",
+          "icon": "resources/activity-bar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "claudevisual": [
+        {
+          "id": "claudevisual.sessions",
+          "name": "Sessions",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "claudevisual.openSettings",
+          "when": "view == claudevisual.sessions",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "galleryBanner": {
+    "color": "#1a1b26",
+    "theme": "dark"
+  },
+  "scripts": {
+    "compile": "tsc --noEmit -p . && node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc --noEmit -p .",
+    "clean": "rm -rf dist",
+    "compile:production": "npm run clean && tsc --noEmit -p . && node esbuild.js --production",
+    "vscode:prepublish": "npm run compile:production",
+    "package": "vsce package",
+    "reinstall": "bash scripts/reinstall-extension.sh",
+    "test": "mocha --require ts-node/register test/suite/**/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.23.0",
+    "mocha": "^10.4.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.0"
+  }
+}
